@@ -3,6 +3,7 @@
 import os
 import sys
 import numpy as np
+import torch
 
 class Tokenizer:
     def __init__(self, chars):
@@ -18,7 +19,14 @@ class Tokenizer:
         for key, value in self.str_to_idx.items():
             self.idx_to_str[value] = key
 
-    def encode(self, text, eot=False):
+    def encode(self, text, eot=False, return_tensors=None):
+        """
+        Textをトークン化して数値リストまたはテンソルとして返す
+        Args:
+            text (str): トークン化するテキスト
+            eot (bool): 最後にEnd-of-Textトークンを追加するか
+            return_tensors (str): "pt"ならTensorを返す, Noneならリストを返す
+        """
         result = []
         for char in text:
             if char not in self.str_to_idx:
@@ -29,14 +37,31 @@ class Tokenizer:
                 result.append(self.str_to_idx[char])
         if eot:
             result.append(self.str_to_idx['<|endoftext|>'])
+
+        # return_tensorsオプションに応じて形式を変える
+        if return_tensors == "pt":
+            return torch.tensor(result, dtype=torch.long)
         return result
 
-    def decode(self, tokens):
+    def decode(self, tokens, skip_special_tokens=False):
+        """
+        トークンIDのリストをデコードしてテキストに変換する関数。
+
+        Args:
+            tokens (List[int]): トークンIDのリスト。
+            skip_special_tokens (bool): 特殊トークンをデコード結果から除外するか。
+
+        Returns:
+            str: デコードされたテキスト。
+        """
         decoded_with_utf_token = [self.idx_to_str.get(token, f"<unk_{token}>") for token in tokens]
         decoded_postprocess_utf = []
         utf_tokens = []
 
         for token in decoded_with_utf_token:
+            if skip_special_tokens and token.startswith("<|") and token.endswith("|>"):
+                continue
+
             if token.startswith("<utf8_"):
                 try:
                     utf_num = int(token.replace("<utf8_", "").replace(">", ""))
