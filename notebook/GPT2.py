@@ -233,3 +233,44 @@ class Transformer(nn.Module):
         """
         loss = self.compute_loss_for_sentence(sentence_tokens, tokenizer)
         return loss < threshold  # Threshold can be adjusted based on empirical results
+
+    def correct_sentence(self, input_tokens, max_new_tokens=50, temperature=1.0):
+        """
+        文法的誤り訂正タスクに特化した生成メソッド。
+
+        Args:
+            input_tokens (torch.Tensor): 文法的誤りを含む入力文のトークンシーケンス。
+            max_new_tokens (int): 訂正後に生成する最大トークン数。
+            temperature (float): 温度スケーリングパラメータ。
+
+        Returns:
+            torch.Tensor: 訂正後のトークンシーケンス。
+        """
+        self.eval()  # モデルを推論モードに設定
+        device = input_tokens.device
+
+        generated = input_tokens  # 初期入力（文法誤りを含む文）
+
+        for _ in range(max_new_tokens):
+            # 現在の入力トークン列からロジットを取得
+            input_seq = generated[:, -self.block_size:]  # ブロックサイズでトランケート
+            logits, _ = self(input_seq)  # モデルの順伝播
+
+            # 最後の時刻ステップのロジットを取得
+            logits = logits[:, -1, :]
+
+            # 温度スケーリング
+            logits = logits / temperature
+
+            # 確率分布から次のトークンをサンプリング
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.argmax(probs, dim=-1)  # 最も確率の高いトークンを選択
+
+            # 終了トークンが生成された場合は終了
+            if next_token.item() == self.transformer.wte.num_embeddings - 1:  # 辞書の最後が終了トークン
+                break
+
+            # 生成トークンをシーケンスに追加
+            generated = torch.cat((generated, next_token.unsqueeze(0)), dim=1)
+
+        return generated
