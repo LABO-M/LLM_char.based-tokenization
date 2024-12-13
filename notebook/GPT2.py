@@ -237,40 +237,43 @@ class Transformer(nn.Module):
     def correct_sentence(self, input_tokens, max_new_tokens=50, temperature=1.0):
         """
         文法的誤り訂正タスクに特化した生成メソッド。
-
         Args:
             input_tokens (torch.Tensor): 文法的誤りを含む入力文のトークンシーケンス。
             max_new_tokens (int): 訂正後に生成する最大トークン数。
             temperature (float): 温度スケーリングパラメータ。
 
         Returns:
-            torch.Tensor: 訂正後のトークンシーケンス。
+            torch.Tensor: 新しく生成されたトークンのシーケンス。
         """
-        self.eval()  # モデルを推論モードに設定
+        self.eval()  # 推論モード
         device = input_tokens.device
 
-        generated = input_tokens  # 初期入力（文法誤りを含む文）
+        # 初期入力シーケンス
+        generated = input_tokens  # 文法誤りのある文
+        input_length = input_tokens.size(1)  # 入力文の長さを記録
 
         for _ in range(max_new_tokens):
-            # 現在の入力トークン列からロジットを取得
+            # 入力シーケンスからロジットを取得
             input_seq = generated[:, -self.block_size:]  # ブロックサイズでトランケート
-            logits, _ = self(input_seq)  # モデルの順伝播
+            logits, _ = self(input_seq)
 
-            # 最後の時刻ステップのロジットを取得
+            # 最後のトークンのロジットを取得
             logits = logits[:, -1, :]
 
             # 温度スケーリング
             logits = logits / temperature
 
-            # 確率分布から次のトークンをサンプリング
+            # 確率分布を計算して次のトークンをサンプリング
             probs = F.softmax(logits, dim=-1)
-            next_token = torch.argmax(probs, dim=-1)  # 最も確率の高いトークンを選択
+            next_token = torch.multinomial(probs, num_samples=1)
 
             # 終了トークンが生成された場合は終了
-            if next_token.item() == self.transformer.wte.num_embeddings - 1:  # 辞書の最後が終了トークン
+            if next_token.item() == self.transformer.wte.num_embeddings - 1:  # 終了トークンを定義
                 break
 
             # 生成トークンをシーケンスに追加
-            generated = torch.cat((generated, next_token.unsqueeze(0)), dim=1)
+            generated = torch.cat((generated, next_token), dim=1)
 
-        return generated
+        # 新しく生成されたトークンのみを返す
+        new_tokens = generated[:, input_length:]
+        return new_tokens
