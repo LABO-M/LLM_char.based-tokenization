@@ -36,7 +36,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.data import Dataset
 from torch.utils.data.dataloader import DataLoader
-
+from torch.utils.data import Dataset, DataLoader
 # -----------------------------------------------------------------------------
 
 @dataclass
@@ -82,7 +82,7 @@ class CausalSelfAttention(nn.Module): #multi-head masked self-attention layer wi
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                      .view(1, 1, config.block_size, config.block_size))
 
-    def forward(self, x):
+    def forward(self, x, return_att=False):
         B, T, C = x.size()
         q, k, v = self.c_attn(x).chunk(3, dim=2)
 
@@ -100,6 +100,9 @@ class CausalSelfAttention(nn.Module): #multi-head masked self-attention layer wi
         # ヘッド次元を結合して出力
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
+
+        if return_att:
+            return y,att
         return y
 
 class Block(nn.Module):
@@ -148,8 +151,11 @@ class Transformer(nn.Module):
         pos_emb = self.transformer.wpe(pos)
         x = tok_emb + pos_emb
 
+        attentions = []
         for block in self.transformer.h:
-            x = block(x)
+            x, att = block.attn(block.ln_1(x), return_att=True)
+            attentions.append(att)
+            x = block.mlp(block.ln_2(x))
 
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
@@ -158,10 +164,10 @@ class Transformer(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
-        return logits, loss
+        return logits, loss, attentions
 
 
-    def generate(self, token_indexes, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, token_indexes, max_new_tokens, tokenizer, temperature=1.0, top_k=None):
         """
         token_indexes:(batch_size, sequence_length)
         max_new_tokens:生成するトークンの最大数
@@ -196,9 +202,11 @@ class Transformer(nn.Module):
             #生成されたトークンを入力シーケンスに追加
             token_indexes = torch.cat([token_indexes, next_token], dim=1)
 
-        return token_indexes
+            sentence = tokenizer.decode(token_indexes[0].tolist())
 
-    def compute_loss_for_sentence(self, sentence_tokens, tokenizer):
+        return sentence
+
+    def compute_loss_for_sentence(self, sentence_tokens, device):
         """
         Computes the loss for a given sentence.
         Args:
@@ -208,8 +216,9 @@ class Transformer(nn.Module):
         Returns:
         loss: The average loss value for the given sentence.
         """
-        idx = torch.tensor(sentence_tokens, dtype=torch.long).unsqueeze(0).to(self.device)
+        idx = torch.tensor(sentence_tokens, dtype=torch.long).unsqueeze(0).to(device)
         targets = idx.clone()  # In language modeling, target is usually the same sequence shifted by 1.
+        targets = targets.clone()
 
         # Shift targets for next-token prediction
         targets[:, :-1] = targets[:, 1:]
@@ -220,7 +229,7 @@ class Transformer(nn.Module):
 
         return loss.item()
 
-    def is_grammatically_correct(self, sentence_tokens, tokenizer, threshold=5.0):
+    def is_grammatically_correct(self, sentence_tokens, device, threshold=5.0):
         """
         Determines if a sentence is grammatically correct based on model's loss.
             Args:
@@ -231,7 +240,7 @@ class Transformer(nn.Module):
         Returns:
             bool: True if grammatically correct, False otherwise.
         """
-        loss = self.compute_loss_for_sentence(sentence_tokens, tokenizer)
+        loss = self.compute_loss_for_sentence(sentence_tokens, device)
         return loss < threshold  # Threshold can be adjusted based on empirical results
 
     def correct_sentence(self, input_tokens, max_new_tokens=50, temperature=1.0):
@@ -277,3 +286,22 @@ class Transformer(nn.Module):
         # 新しく生成されたトークンのみを返す
         new_tokens = generated[:, input_length:]
         return new_tokens
+
+
+class BenchmarkDataset(Dataset):
+    def __init__(self, tokenizer, texts, labels):
+        """
+        ベンチマーク用データセット。
+        Args:
+            tokenizer (Tokenizer): トークナイザーオブジェクト
+            texts (List[str]): 入力テキストのリスト
+            labels (List[int]): ラベル（分類タスク用）
+        """
+        self.inputs = [tokenizer.encode(text, eot=True, return_tensors="pt").squeeze(0) for text in texts]
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        return self.inputs[idx], self.labels[idx]
