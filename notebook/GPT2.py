@@ -179,7 +179,7 @@ class Transformer(nn.Module):
             token_indexes = token_indexes[:, -self.block_size:]
 
             #モデルの予測
-            logits, _ = self(token_indexes)
+            logits, _, attention = self(token_indexes)
 
             #現在の時刻のロジット
             logits = logits[:, -1, :]
